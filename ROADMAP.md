@@ -23,13 +23,19 @@ This document outlines the current state and future plans for the book.
 - [x] Section structure and topics defined
 - [x] Key concepts identified
 
-### =§ In Progress
-
 #### Part 2: Core Concepts (Building Blocks)
-- [ ] Chapter 4: Type Systems - expand from outline
-- [ ] Chapter 5: Query Language Design - expand from outline
-- [ ] Chapter 6: The Graph Mental Model - expand from outline
-- [ ] Chapter 7: Resolvers - expand from outline
+- [x] Chapter 4: Type Systems - **COMPLETE**
+- [x] Chapter 5: Query Language Design - **COMPLETE**
+- [x] Chapter 6: The Graph Mental Model - **COMPLETE**
+- [x] Chapter 7: Resolvers - **COMPLETE**
+
+### =ï¿½ In Progress
+
+#### Part 3: Implementation (Making It Real)
+- [ ] Chapter 8: Schema Design - expand from outline
+- [ ] Chapter 9: Query Parsing & AST - expand from outline
+- [ ] Chapter 10: Execution Engine - expand from outline
+- [ ] Chapter 11: The N+1 Problem & DataLoader - expand from outline
 
 ## Future Plans
 
