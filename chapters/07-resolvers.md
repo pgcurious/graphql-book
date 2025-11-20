@@ -1,39 +1,54 @@
 # Chapter 7: Resolvers - The Bridge Between Queries and Data
 
-**Status:** Detailed Outline (To Be Expanded)
+> "Resolvers are where the magic happens. They're the translators between your elegant queries and your messy reality."
 
 **What we'll discover:** How resolvers are the fundamental building blocks that connect your GraphQL schema to your actual data sources.
 
 ---
 
-## Outline
+## Introduction: The Missing Link
 
-### Introduction: The Missing Link
-- We have a schema (the contract)
-- We have queries (the requests)
-- But how does data actually get fetched?
-- **Resolvers are the answer**
+We've built an impressive system:
+- A **schema** defines what data exists and its shape
+- A **type system** provides validation and safety
+- A **query language** lets clients specify exactly what they need
+- A **graph model** enables flexible traversal
 
-### Part 1: What is a Resolver?
+But there's a crucial piece missing: **How does the data actually get fetched?**
 
-#### The Core Concept
-A resolver is a function with this signature:
+When a client queries for `user(id: 123) { name, posts { title } }`, something needs to:
+1. Fetch the user from the database
+2. Extract the name field
+3. Fetch the user's posts
+4. Extract each post's title
+
+**Resolvers are the answer.** They're the glue between your schema and your data.
+
+## Part 1: What is a Resolver?
+
+### The Core Concept
+
+A resolver is a function that fetches the value for a single field. Every field in your schema can have a resolver.
+
+**Function signature:**
 ```
-(parent, arguments, context, info) í field value
+(parent, arguments, context, info) ‚Üí field value
 ```
 
-**Parameters:**
-- **parent**: The parent object (result from parent resolver)
-- **arguments**: Arguments passed to this field
-- **context**: Shared data (auth, database connections, etc.)
-- **info**: Query AST and schema info
+**Four parameters:**
 
-**Example:**
+1. **parent**: The result from the parent field's resolver
+2. **arguments**: The arguments passed to this field in the query
+3. **context**: Shared data accessible to all resolvers (auth, database, cache, etc.)
+4. **info**: Metadata about the query (AST, field info, return type)
+
+**Java interface:**
+
 ```java
 @FunctionalInterface
-public interface FieldResolver<T, R> {
-    R resolve(
-        T parent,
+public interface FieldResolver<TParent, TResult> {
+    TResult resolve(
+        TParent parent,
         Map<String, Object> arguments,
         DataFetchingContext context,
         FieldInfo info
@@ -41,67 +56,102 @@ public interface FieldResolver<T, R> {
 }
 ```
 
-#### Trivial Resolver Example
+### Trivial Example
+
+For this schema:
+
 ```graphql
 type User {
-    id: ID!
-    name: String!
+  id: ID!
+  name: String!
 }
 ```
+
+The resolvers:
 
 ```java
 public class UserResolvers {
 
     // Resolver for User.id
-    public String getId(User user, Map<String, Object> args,
-                        DataFetchingContext ctx, FieldInfo info) {
-        return user.getId();  // Just return the field
+    public String getId(
+            User parent,  // The User object
+            Map<String, Object> args,
+            DataFetchingContext ctx,
+            FieldInfo info) {
+
+        return parent.getId();  // Just return the field
     }
 
     // Resolver for User.name
-    public String getName(User user, Map<String, Object> args,
-                          DataFetchingContext ctx, FieldInfo info) {
-        return user.getName();  // Just return the field
+    public String getName(
+            User parent,
+            Map<String, Object> args,
+            DataFetchingContext ctx,
+            FieldInfo info) {
+
+        return parent.getName();  // Just return the field
     }
 }
 ```
 
-**Default resolvers:** Most GraphQL implementations provide default resolvers for simple field access.
+These resolvers are trivial‚Äîthey just access fields on the parent object.
 
-### Part 2: Resolver Chains
+**Default resolvers:** Most GraphQL implementations provide default resolvers for simple field access. If `User` has a `getName()` method, you don't need to write a resolver. The framework generates one automatically.
 
-#### Parent-Child Relationship
+## Part 2: Resolver Chains
+
+Resolvers form chains. The output of one resolver becomes the input (parent) of the next.
+
+### Execution Flow
+
+Query:
 ```graphql
-query {
-    user(id: 123) {    # Resolver 1: Query.user
-        name           # Resolver 2: User.name
-        posts {        # Resolver 3: User.posts
-            title      # Resolver 4: Post.title
-        }
+{
+  user(id: 123) {    # Step 1
+    name             # Step 2
+    posts {          # Step 3
+      title          # Step 4
     }
+  }
 }
 ```
 
-**Execution flow:**
-```
-1. Query.user(parent=null, args={id: 123})
-   í Returns User object
+**Execution:**
 
-2. User.name(parent=User, args={})
-   í Returns "Alice"
+**Step 1:** Resolve `Query.user`
+- Parent: `null` (root query has no parent)
+- Arguments: `{id: 123}`
+- Returns: `User` object
 
-3. User.posts(parent=User, args={})
-   í Returns [Post1, Post2, Post3]
+**Step 2:** Resolve `User.name`
+- Parent: `User` object (from step 1)
+- Arguments: `{}`
+- Returns: `"Alice"`
 
-4. For each Post:
-   Post.title(parent=Post, args={})
-   í Returns "Post Title"
-```
+**Step 3:** Resolve `User.posts`
+- Parent: `User` object (from step 1)
+- Arguments: `{}`
+- Returns: `[Post1, Post2, Post3]`
 
-#### Java Implementation
+**Step 4:** Resolve `Post.title` for each post
+- Parent: `Post1` (first iteration)
+- Arguments: `{}`
+- Returns: `"Post 1 Title"`
+
+(Repeat step 4 for Post2 and Post3)
+
+### Java Implementation
+
 ```java
 public class ResolverChain {
 
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PostRepository postRepository;
+
+    // Step 1: Root query resolver
     @Resolver(type = "Query", field = "user")
     public User getUser(
             Object parent,  // null for root queries
@@ -113,9 +163,10 @@ public class ResolverChain {
         return userRepository.findById(id).orElse(null);
     }
 
+    // Step 2: Scalar field resolver (usually auto-generated)
     @Resolver(type = "User", field = "name")
     public String getUserName(
-            User parent,  // The User object from previous resolver
+            User parent,  // The User from getUser()
             Map<String, Object> args,
             DataFetchingContext ctx,
             FieldInfo info) {
@@ -123,9 +174,10 @@ public class ResolverChain {
         return parent.getName();
     }
 
+    // Step 3: Relationship resolver
     @Resolver(type = "User", field = "posts")
     public List<Post> getUserPosts(
-            User parent,
+            User parent,  // The User from getUser()
             Map<String, Object> args,
             DataFetchingContext ctx,
             FieldInfo info) {
@@ -133,9 +185,10 @@ public class ResolverChain {
         return postRepository.findByAuthorId(parent.getId());
     }
 
+    // Step 4: Scalar field resolver for each Post
     @Resolver(type = "Post", field = "title")
     public String getPostTitle(
-            Post parent,
+            Post parent,  // Each Post from getUserPosts()
             Map<String, Object> args,
             DataFetchingContext ctx,
             FieldInfo info) {
@@ -145,120 +198,48 @@ public class ResolverChain {
 }
 ```
 
-### Part 3: Resolver Registration
+The chain flows naturally: root query ‚Üí user ‚Üí posts ‚Üí titles.
 
-#### Annotation-Based Registration
-```java
-@Component
-public class UserResolvers {
+## Part 3: Context and Shared Data
 
-    @Autowired
-    private UserRepository userRepository;
+### The Context Object
 
-    @Autowired
-    private PostRepository postRepository;
+Context is shared across all resolvers in a single query execution. It's created once per request and contains:
 
-    @GraphQLQueryResolver
-    public User user(@Argument("id") Long id) {
-        return userRepository.findById(id).orElse(null);
-    }
+- **Authentication**: Current user, roles, permissions
+- **Data loaders**: For batching and caching
+- **Database connections**: Transaction-scoped connections
+- **Caching**: Request-level cache
+- **Logging**: Request ID for tracing
 
-    @GraphQLResolver(type = User.class)
-    public List<Post> posts(User user,
-                           @Argument("limit") Integer limit) {
-        return postRepository.findByAuthorId(
-            user.getId(),
-            limit != null ? limit : 10
-        );
-    }
-}
-```
-
-#### Programmatic Registration
-```java
-public class ResolverRegistry {
-
-    private Map<String, Map<String, FieldResolver<?, ?>>> resolvers;
-
-    public <T, R> void register(
-            Class<T> type,
-            String fieldName,
-            FieldResolver<T, R> resolver) {
-
-        String typeName = type.getSimpleName();
-        resolvers
-            .computeIfAbsent(typeName, k -> new HashMap<>())
-            .put(fieldName, resolver);
-    }
-
-    public FieldResolver<?, ?> get(String typeName, String fieldName) {
-        return resolvers
-            .getOrDefault(typeName, Collections.emptyMap())
-            .get(fieldName);
-    }
-}
-
-// Usage
-registry.register(User.class, "posts",
-    (user, args, ctx, info) -> postRepository.findByAuthorId(user.getId())
-);
-```
-
-#### Schema-First Registration
-```java
-// Define schema in SDL
-String schema = """
-    type Query {
-        user(id: ID!): User
-    }
-    type User {
-        id: ID!
-        name: String!
-        posts: [Post!]!
-    }
-    """;
-
-// Wire resolvers to schema
-RuntimeWiring wiring = RuntimeWiring.newRuntimeWiring()
-    .type("Query", builder -> builder
-        .dataFetcher("user", env -> {
-            Long id = env.getArgument("id");
-            return userRepository.findById(id).orElse(null);
-        }))
-    .type("User", builder -> builder
-        .dataFetcher("posts", env -> {
-            User user = env.getSource();
-            return postRepository.findByAuthorId(user.getId());
-        }))
-    .build();
-
-GraphQLSchema graphQLSchema = SchemaGenerator.buildSchema(schema, wiring);
-```
-
-### Part 4: Context and Dependency Injection
-
-#### The Context Object
 ```java
 public class DataFetchingContext {
     private final HttpServletRequest request;
-    private final Authentication authentication;
+    private final User currentUser;
     private final DataLoaderRegistry dataLoaders;
-    private final DatabaseConnection database;
+    private final EntityManager entityManager;
     private final CacheManager cache;
+    private final String requestId;
 
-    // Getters...
-
+    // Getters
     public User getCurrentUser() {
-        return authentication.getUser();
+        return currentUser;
     }
 
     public <K, V> DataLoader<K, V> getDataLoader(String name) {
         return dataLoaders.getDataLoader(name);
     }
+
+    public String getRequestId() {
+        return requestId;
+    }
 }
 ```
 
-#### Building Context Per Request
+### Building Context
+
+Context is built once per request:
+
 ```java
 @Component
 public class GraphQLContextBuilder {
@@ -267,73 +248,87 @@ public class GraphQLContextBuilder {
     private AuthenticationService authService;
 
     @Autowired
-    private DataLoaderRegistry dataLoaderRegistry;
+    private DataLoaderFactory dataLoaderFactory;
 
     public DataFetchingContext build(HttpServletRequest request) {
-        // Extract auth token
+        // Extract and validate auth token
         String token = request.getHeader("Authorization");
-        Authentication auth = authService.authenticate(token);
+        User currentUser = authService.authenticate(token);
 
-        // Create fresh DataLoaders for this request
-        DataLoaderRegistry loaders = new DataLoaderRegistry();
-        loaders.register("users", createUserLoader());
-        loaders.register("posts", createPostLoader());
+        // Create request-scoped data loaders
+        DataLoaderRegistry dataLoaders = new DataLoaderRegistry();
+        dataLoaders.register("users", dataLoaderFactory.createUserLoader());
+        dataLoaders.register("posts", dataLoaderFactory.createPostLoader());
+        dataLoaders.register("comments", dataLoaderFactory.createCommentLoader());
+
+        // Generate request ID for tracing
+        String requestId = UUID.randomUUID().toString();
 
         return new DataFetchingContext(
             request,
-            auth,
-            loaders,
-            database,
-            cache
-        );
-    }
-
-    private DataLoader<Long, User> createUserLoader() {
-        return DataLoader.newDataLoader(keys ->
-            CompletableFuture.supplyAsync(() ->
-                userRepository.findAllById(keys)
-            )
+            currentUser,
+            dataLoaders,
+            entityManager,
+            cache,
+            requestId
         );
     }
 }
 ```
 
-#### Using Context in Resolvers
+### Using Context in Resolvers
+
 ```java
-@GraphQLResolver(type = Post.class)
-public class PostResolvers {
+@Resolver(type = "Post", field = "author")
+public CompletableFuture<User> getAuthor(
+        Post parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx,
+        FieldInfo info) {
 
-    @GraphQLField
-    public User author(Post post, DataFetchingContext ctx) {
-        // Use DataLoader from context
-        return ctx.getDataLoader("users")
-            .load(post.getAuthorId())
-            .join();
-    }
+    // Use DataLoader from context to batch requests
+    return ctx.getDataLoader("users")
+        .load(parent.getAuthorId());
+}
 
-    @GraphQLField
-    public boolean canEdit(Post post, DataFetchingContext ctx) {
-        // Check authorization
-        User currentUser = ctx.getCurrentUser();
-        return post.getAuthorId().equals(currentUser.getId());
-    }
+@Resolver(type = "Post", field = "canEdit")
+public boolean canEdit(
+        Post parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx,
+        FieldInfo info) {
+
+    // Use current user from context for authorization
+    User currentUser = ctx.getCurrentUser();
+    return parent.getAuthorId().equals(currentUser.getId())
+        || currentUser.hasRole("ADMIN");
 }
 ```
 
-### Part 5: Async Resolvers
+Context enables clean separation of concerns. Resolvers focus on fetching data, while cross-cutting concerns (auth, caching, tracing) live in context.
 
-#### Why Async?
-- Database queries are I/O bound
-- Network calls to microservices
+## Part 4: Async Resolvers
+
+### Why Async?
+
+Most data fetching is I/O bound:
+- Database queries
+- HTTP calls to microservices
 - External API calls
-- Don't block threads waiting
+- File system access
 
-#### CompletableFuture Resolvers
+Blocking threads while waiting for I/O is wasteful. Async resolvers let you handle thousands of concurrent requests with a small thread pool.
+
+### CompletableFuture Resolvers
+
 ```java
 public class AsyncResolvers {
 
     @Autowired
     private AsyncUserRepository userRepository;
+
+    @Autowired
+    private AsyncPostRepository postRepository;
 
     @Resolver(type = "Query", field = "user")
     public CompletableFuture<User> getUser(
@@ -353,138 +348,173 @@ public class AsyncResolvers {
             DataFetchingContext ctx,
             FieldInfo info) {
 
-        return CompletableFuture.supplyAsync(() ->
-            postRepository.findByAuthorId(parent.getId())
-        );
+        return postRepository.findByAuthorIdAsync(parent.getId());
     }
 }
 ```
 
-#### Parallel Execution
+The execution engine waits for the `CompletableFuture` to complete before proceeding to child fields.
+
+### Parallel Execution
+
+Fetch multiple pieces of data in parallel:
+
 ```java
-public class ParallelResolver {
+@Resolver(type = "User", field = "stats")
+public CompletableFuture<UserStats> getStats(
+        User user,
+        Map<String, Object> args,
+        DataFetchingContext ctx,
+        FieldInfo info) {
 
-    @Resolver(type = "User", field = "stats")
-    public CompletableFuture<UserStats> getStats(
-            User user,
-            Map<String, Object> args,
-            DataFetchingContext ctx,
-            FieldInfo info) {
+    // Launch 3 queries in parallel
+    CompletableFuture<Long> postCount =
+        CompletableFuture.supplyAsync(() ->
+            postRepository.countByAuthor(user.getId())
+        );
 
-        // Execute multiple queries in parallel
-        CompletableFuture<Integer> postCount =
-            CompletableFuture.supplyAsync(() ->
-                postRepository.countByAuthor(user.getId())
-            );
+    CompletableFuture<Long> commentCount =
+        CompletableFuture.supplyAsync(() ->
+            commentRepository.countByAuthor(user.getId())
+        );
 
-        CompletableFuture<Integer> commentCount =
-            CompletableFuture.supplyAsync(() ->
-                commentRepository.countByAuthor(user.getId())
-            );
+    CompletableFuture<Long> followerCount =
+        CompletableFuture.supplyAsync(() ->
+            followerRepository.countFollowers(user.getId())
+        );
 
-        CompletableFuture<Integer> followerCount =
-            CompletableFuture.supplyAsync(() ->
-                followerRepository.countFollowers(user.getId())
-            );
-
-        // Combine results
-        return CompletableFuture.allOf(postCount, commentCount, followerCount)
-            .thenApply(v -> new UserStats(
-                postCount.join(),
-                commentCount.join(),
-                followerCount.join()
-            ));
-    }
+    // Wait for all to complete, then combine results
+    return CompletableFuture.allOf(postCount, commentCount, followerCount)
+        .thenApply(v -> new UserStats(
+            postCount.join(),
+            commentCount.join(),
+            followerCount.join()
+        ));
 }
 ```
 
-### Part 6: Resolver Patterns
+All three queries run concurrently. Total time is the max of the three, not the sum.
 
-#### Pattern 1: Computed Fields
+## Part 5: Common Resolver Patterns
+
+### Pattern 1: Computed Fields
+
 ```graphql
 type User {
-    firstName: String!
-    lastName: String!
-    fullName: String!  # Computed from firstName + lastName
+  firstName: String!
+  lastName: String!
+  fullName: String!  # Computed
 }
 ```
 
 ```java
 @Resolver(type = "User", field = "fullName")
-public String getFullName(User user) {
-    return user.getFirstName() + " " + user.getLastName();
+public String getFullName(User parent) {
+    return parent.getFirstName() + " " + parent.getLastName();
 }
 ```
 
-#### Pattern 2: Aggregation Fields
+The database stores `firstName` and `lastName`. The resolver computes `fullName` on demand.
+
+### Pattern 2: Aggregations
+
 ```graphql
 type Post {
-    likeCount: Int!     # Aggregate from likes table
-    commentCount: Int!  # Aggregate from comments table
+  id: ID!
+  title: String!
+  likeCount: Int!     # Aggregated from likes table
+  commentCount: Int!  # Aggregated from comments table
 }
 ```
 
 ```java
 @Resolver(type = "Post", field = "likeCount")
-public Integer getLikeCount(Post post, DataFetchingContext ctx) {
+public CompletableFuture<Integer> getLikeCount(
+        Post parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx) {
+
+    // Use DataLoader to batch count queries
     return ctx.getDataLoader("likeCounts")
-        .load(post.getId())
-        .join();
+        .load(parent.getId());
 }
 ```
 
-#### Pattern 3: Delegating to Other Services
+Aggregations are expensive. DataLoaders batch them efficiently.
+
+### Pattern 3: Delegating to Other Services
+
 ```graphql
 type User {
-    recommendations: [Post!]!  # From recommendation service
+  id: ID!
+  name: String!
+  recommendations: [Post!]!  # From recommendation service
 }
 ```
 
 ```java
 @Resolver(type = "User", field = "recommendations")
 public CompletableFuture<List<Post>> getRecommendations(
-        User user,
+        User parent,
+        Map<String, Object> args,
         DataFetchingContext ctx) {
 
     // Call external recommendation service
-    return recommendationServiceClient
-        .getRecommendations(user.getId())
+    return recommendationClient
+        .getRecommendations(parent.getId())
         .thenCompose(postIds ->
+            // Then fetch posts using DataLoader
             ctx.getDataLoader("posts").loadMany(postIds)
         );
 }
 ```
 
-#### Pattern 4: Authorization in Resolvers
+GraphQL unifies data from multiple sources behind a single schema.
+
+### Pattern 4: Authorization
+
 ```java
 @Resolver(type = "User", field = "email")
-public String getEmail(User user, DataFetchingContext ctx) {
+public String getEmail(
+        User parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx) {
+
     User currentUser = ctx.getCurrentUser();
 
     // Only show email to the user themselves or admins
-    if (currentUser.getId().equals(user.getId()) ||
-        currentUser.isAdmin()) {
-        return user.getEmail();
+    if (parent.getId().equals(currentUser.getId()) ||
+        currentUser.hasRole("ADMIN")) {
+        return parent.getEmail();
     }
 
     throw new UnauthorizedException("Cannot access email");
 }
 ```
 
-#### Pattern 5: Pagination
+Field-level authorization. Different fields can have different permissions.
+
+### Pattern 5: Pagination (Relay-style)
+
 ```graphql
 type Query {
-    posts(first: Int, after: String): PostConnection!
+  posts(first: Int, after: String): PostConnection!
 }
 
 type PostConnection {
-    edges: [PostEdge!]!
-    pageInfo: PageInfo!
+  edges: [PostEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
 }
 
 type PostEdge {
-    node: Post!
-    cursor: String!
+  node: Post!
+  cursor: String!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
 }
 ```
 
@@ -495,24 +525,21 @@ public PostConnection getPosts(
         Map<String, Object> args,
         DataFetchingContext ctx) {
 
-    Integer first = (Integer) args.get("first");
+    Integer first = (Integer) args.getOrDefault("first", 10);
     String after = (String) args.get("after");
 
-    // Decode cursor
-    Long afterId = after != null
-        ? decodeCursor(after)
-        : 0L;
+    // Decode cursor (base64 encoded ID)
+    Long afterId = after != null ? decodeCursor(after) : 0L;
 
-    // Fetch posts
-    List<Post> posts = postRepository
-        .findAfter(afterId, first + 1);  // Fetch one extra to check hasNext
+    // Fetch first+1 to determine hasNextPage
+    List<Post> posts = postRepository.findAfter(afterId, first + 1);
 
-    boolean hasNext = posts.size() > first;
-    if (hasNext) {
+    boolean hasNextPage = posts.size() > first;
+    if (hasNextPage) {
         posts = posts.subList(0, first);
     }
 
-    // Build edges
+    // Build edges with cursors
     List<PostEdge> edges = posts.stream()
         .map(post -> new PostEdge(
             post,
@@ -521,22 +548,40 @@ public PostConnection getPosts(
         .collect(Collectors.toList());
 
     // Build page info
-    PageInfo pageInfo = new PageInfo(
-        hasNext,
-        !edges.isEmpty() ? edges.get(0).getCursor() : null,
-        !edges.isEmpty() ? edges.get(edges.size() - 1).getCursor() : null
-    );
+    String endCursor = !edges.isEmpty()
+        ? edges.get(edges.size() - 1).getCursor()
+        : null;
 
-    return new PostConnection(edges, pageInfo);
+    PageInfo pageInfo = new PageInfo(hasNextPage, endCursor);
+
+    return new PostConnection(edges, pageInfo, posts.size());
+}
+
+private String encodeCursor(Long id) {
+    return Base64.getEncoder().encodeToString(id.toString().getBytes());
+}
+
+private Long decodeCursor(String cursor) {
+    String decoded = new String(Base64.getDecoder().decode(cursor));
+    return Long.parseLong(decoded);
 }
 ```
 
-### Part 7: Error Handling in Resolvers
+Cursor-based pagination is stable even when data changes between requests.
 
-#### Throwing Exceptions
+## Part 6: Error Handling
+
+### Throwing Exceptions
+
+Resolvers can throw exceptions:
+
 ```java
 @Resolver(type = "Query", field = "user")
-public User getUser(Object parent, Map<String, Object> args) {
+public User getUser(
+        Object parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx) {
+
     Long id = (Long) args.get("id");
 
     return userRepository.findById(id)
@@ -546,58 +591,108 @@ public User getUser(Object parent, Map<String, Object> args) {
 }
 ```
 
-#### Custom Error Types
+The exception is caught by the GraphQL engine and converted to an error in the response.
+
+### Custom Error Extensions
+
+Add metadata to errors:
+
 ```java
-public class GraphQLError {
-    private String message;
-    private List<Location> locations;
-    private List<String> path;
-    private Map<String, Object> extensions;
-}
+public class ResourceNotFoundException extends RuntimeException {
+    private final String resourceType;
+    private final String resourceId;
 
-public class ResourceNotFoundException extends RuntimeException
-        implements GraphQLErrorProvider {
+    public ResourceNotFoundException(String resourceType, String resourceId) {
+        super(resourceType + " not found: " + resourceId);
+        this.resourceType = resourceType;
+        this.resourceId = resourceId;
+    }
 
-    @Override
-    public GraphQLError toGraphQLError() {
-        return GraphQLError.builder()
-            .message(getMessage())
-            .extensions(Map.of(
-                "code", "RESOURCE_NOT_FOUND",
-                "timestamp", Instant.now()
-            ))
-            .build();
+    public Map<String, Object> getExtensions() {
+        return Map.of(
+            "code", "RESOURCE_NOT_FOUND",
+            "resourceType", resourceType,
+            "resourceId", resourceId,
+            "timestamp", Instant.now().toString()
+        );
     }
 }
 ```
 
-#### Partial Failures
+Response:
+
+```json
+{
+  "errors": [
+    {
+      "message": "User not found: 123",
+      "path": ["user"],
+      "extensions": {
+        "code": "RESOURCE_NOT_FOUND",
+        "resourceType": "User",
+        "resourceId": "123",
+        "timestamp": "2024-01-15T10:30:00Z"
+      }
+    }
+  ],
+  "data": {
+    "user": null
+  }
+}
+```
+
+### Partial Failures
+
+GraphQL supports partial failures. If one field fails, other fields can still succeed:
+
 ```java
 @Resolver(type = "User", field = "posts")
-public List<Post> getPosts(User user, DataFetchingContext ctx) {
+public List<Post> getPosts(
+        User parent,
+        Map<String, Object> args,
+        DataFetchingContext ctx) {
+
     try {
-        return postRepository.findByAuthorId(user.getId());
+        return postRepository.findByAuthorId(parent.getId());
     } catch (DatabaseException e) {
-        // Log error but return partial result
-        logger.error("Failed to fetch posts for user: " + user.getId(), e);
+        logger.error("Failed to fetch posts for user: " + parent.getId(), e);
 
-        // Return empty list and error will be in "errors" array
-        ctx.addError(new GraphQLError(
-            "Failed to fetch posts: " + e.getMessage(),
-            ctx.getPath()
-        ));
-
+        // Return empty list; error goes in errors array
         return Collections.emptyList();
     }
 }
 ```
 
-### Part 8: Testing Resolvers
+Result:
 
-#### Unit Testing
+```json
+{
+  "errors": [
+    {
+      "message": "Database error while fetching posts",
+      "path": ["user", "posts"]
+    }
+  ],
+  "data": {
+    "user": {
+      "name": "Alice",
+      "posts": []
+    }
+  }
+}
+```
+
+The client gets the user's name even though fetching posts failed.
+
+## Part 7: Testing Resolvers
+
+### Unit Tests
+
+Resolvers are just functions. Test them like any other function:
+
 ```java
 @Test
-public void testUserPostsResolver() {
+public void testGetUserPosts() {
     // Setup
     User user = new User(1L, "Alice");
     Post post1 = new Post(1L, "Title 1");
@@ -606,27 +701,38 @@ public void testUserPostsResolver() {
     when(postRepository.findByAuthorId(1L))
         .thenReturn(List.of(post1, post2));
 
-    // Execute resolver
+    // Execute
     UserResolvers resolver = new UserResolvers(postRepository);
-    List<Post> result = resolver.getPosts(user, Map.of(), mockContext, mockInfo);
+    List<Post> result = resolver.getPosts(
+        user,
+        Map.of(),
+        mockContext,
+        mockInfo
+    );
 
     // Verify
     assertEquals(2, result.size());
     assertEquals("Title 1", result.get(0).getTitle());
+    assertEquals("Title 2", result.get(1).getTitle());
+
+    verify(postRepository).findByAuthorId(1L);
 }
 ```
 
-#### Integration Testing
+### Integration Tests
+
+Test the entire GraphQL execution:
+
 ```java
 @SpringBootTest
 @AutoConfigureGraphQLTester
-public class UserResolverIntegrationTest {
+public class UserQueryIntegrationTest {
 
     @Autowired
     private GraphQlTester graphQlTester;
 
     @Test
-    public void testUserQuery() {
+    public void testUserQueryWithPosts() {
         graphQlTester
             .document("""
                 query {
@@ -640,29 +746,48 @@ public class UserResolverIntegrationTest {
                 """)
             .execute()
             .path("user.name").entity(String.class).isEqualTo("Alice")
-            .path("user.posts").entityList(Post.class).hasSize(2);
+            .path("user.posts").entityList(Post.class).hasSize(2)
+            .path("user.posts[0].title").entity(String.class).isEqualTo("First Post");
     }
 }
 ```
 
-### Key Insights
+Integration tests verify the entire stack: parsing, validation, execution, and serialization.
 
-1. **Resolvers are functions** - simple, testable, composable
-2. **One resolver per field** - fine-grained control
-3. **Async by default** - non-blocking I/O
-4. **Context is powerful** - share data across resolvers
-5. **Errors are first-class** - partial failures are okay
+## Key Insights
 
-### Exercises
+Let's crystallize what we've learned:
 
-1. **Write a resolver chain** for a 3-level nested query
-2. **Implement async resolver** using CompletableFuture
-3. **Build context object** with authentication and caching
-4. **Create computed field resolver** that aggregates data
-5. **Handle errors gracefully** - implement partial failure handling
+1. **Resolvers are functions** that fetch field values. One resolver per field.
+
+2. **Resolvers form chains**. The output of one becomes the parent input of the next.
+
+3. **Context is shared** across all resolvers in a request. Use it for auth, caching, and data loaders.
+
+4. **Async resolvers are crucial** for performance. Don't block threads waiting for I/O.
+
+5. **Errors are first-class**. Partial failures are acceptable; clients get what they can.
+
+6. **Resolvers encapsulate data fetching**. The schema defines the what; resolvers define the how.
+
+7. **Resolvers are testable**. They're just functions with inputs and outputs.
+
+Resolvers are where GraphQL's elegance meets your messy reality. They translate between your clean schema and your complex data sources. Master resolvers, and you master GraphQL.
+
+## What's Next
+
+We've covered the fundamentals: schemas, types, queries, graphs, and resolvers. But there's more depth to explore.
+
+In the next chapters, we'll dive into implementation details:
+- How to parse queries into an Abstract Syntax Tree
+- How the execution engine actually runs queries
+- How to solve the N+1 problem with DataLoader
+- How to handle mutations, subscriptions, and security
+
+The journey continues.
 
 ---
 
-**Next:** [Chapter 8: Schema Design - SDL from Scratch í](08-schema-design.md)
+**Next:** [Chapter 8: Schema Design - SDL from Scratch ‚Üí](08-schema-design.md)
 
-**Previous:** [ê Chapter 6: The Graph Mental Model - Thinking in Relationships](06-graph-mental-model.md)
+**Previous:** [‚Üê Chapter 6: The Graph Mental Model - Thinking in Relationships](06-graph-mental-model.md)
